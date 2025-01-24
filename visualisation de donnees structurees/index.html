@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard des Musées</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+      #map {
+        height: 400px;
+      }
+      #museum-list img {
+        max-width: 100%;
+        height: auto;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50">
+    <div class="min-h-screen p-6">
+      <h1 class="text-3xl font-bold text-gray-800 mb-8">
+        Dashboard des Musées de France
+      </h1>
+
+      <!-- Input File et Filtre de Ville -->
+      <div class="flex space-x-4 mb-8">
+        <input
+          type="file"
+          accept=".csv"
+          id="csvFile"
+          class="p-2 border rounded"
+        />
+        <input
+          type="text"
+          id="cityFilter"
+          placeholder="Filtrer par ville ou région"
+          class="p-2 border rounded"
+        />
+        <button
+          id="applyFilter"
+          class="p-2 bg-blue-500 text-white rounded"
+        >
+          Appliquer le filtre
+        </button>
+      </div>
+
+      <!-- Statistiques -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-medium text-gray-600">
+              Nombre total de musées
+            </h3>
+            <i class="fas fa-building text-blue-500 text-xl"></i>
+          </div>
+          <p class="text-2xl font-bold" id="total-museums">-</p>
+        </div>
+
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-medium text-gray-600">
+              Nombre total de visiteurs
+            </h3>
+            <i class="fas fa-users text-green-500 text-xl"></i>
+          </div>
+          <p class="text-2xl font-bold" id="total-visitors">-</p>
+        </div>
+
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-medium text-gray-600">Plus ancien musée</h3>
+            <i class="fas fa-calendar text-amber-500 text-xl"></i>
+          </div>
+          <p class="text-2xl font-bold" id="oldest-year">-</p>
+          <p class="text-sm text-gray-600 mt-1" id="oldest-museum">-</p>
+        </div>
+      </div>
+
+      <!-- Graphique et Carte -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">
+            Top 10 des Musées les Plus Visités
+          </h2>
+          <div class="h-96">
+            <canvas id="museums-chart"></canvas>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">Carte des Musées</h2>
+          <div id="map" class="rounded-lg"></div>
+        </div>
+      </div>
+
+      <!-- Évolution du Nombre de Musées par Année et Liste des Musées -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-xl font-semibold mb-4">
+            Évolution du Nombre de Musées par Année
+          </h2>
+          <div class="h-96">
+            <canvas id="years-chart"></canvas>
+          </div>
+        </div>
+
+        <div id="museum-list-section" class="bg-white rounded-lg shadow p-6 hidden">
+          <h2 class="text-xl font-semibold mb-4">Liste des Musées</h2>
+          <ul id="museum-list" class="space-y-4"></ul>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let map;
+      let markersLayer;
+      let chartInstance = null;
+      let yearsChartInstance = null;
+      let allData = []; // Store original full dataset
+
+      function initMap() {
+        map = L.map("map").setView([46.603354, 1.888334], 6); // Centre de la France
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution: "© OpenStreetMap contributors",
+        }).addTo(map);
+        markersLayer = L.layerGroup().addTo(map);
+      }
+
+      async function zoomToCity(cityName) {
+        if (!cityName) return;
+
+        try {
+          // Utiliser Nominatim pour géocoder la ville
+          const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cityName + ', France')}`);
+          const results = await response.json();
+
+          if (results && results.length > 0) {
+            const cityData = results[0];
+            const lat = parseFloat(cityData.lat);
+            const lon = parseFloat(cityData.lon);
+
+            // Filtrer les musées dans la ville
+            const cityMuseums = allData.filter(museum => {
+              const museumCity = (museum['Ville'] || museum['City'] || museum.city || museum['museumCity'] || '').toLowerCase();
+              return museumCity.includes(cityName.toLowerCase());
+            });
+
+            // Zoomer sur la ville avec un niveau de zoom adapté
+            map.setView([lat, lon], cityMuseums.length > 5 ? 10 : 12);
+          }
+        } catch (error) {
+          console.error('Erreur de géocodage:', error);
+        }
+      }
+
+      function addMarkersToMap(data) {
+        markersLayer.clearLayers();
+
+        const coordMap = new Map();
+        const validMuseums = [];
+
+        data.forEach((museum) => {
+          const museumName = museum.museumLabel || museum['Nom du Musée'] || '';
+          const coord = museum.coord || museum['Coordonnées'] || '';
+
+          if (coord) {
+            try {
+              const coords = coord
+                .replace("Point(", "")
+                .replace(")", "")
+                .split(" ");
+              const lat = parseFloat(coords[1]);
+              const lng = parseFloat(coords[0]);
+              const coordKey = `${lat},${lng}`;
+
+              if (!isNaN(lat) && !isNaN(lng) && !coordMap.has(coordKey)) {
+                const marker = L.marker([lat, lng]).bindPopup(`
+                  <b>${museumName}</b><br>
+                  Visiteurs: ${
+                    (museum.visitors || museum['Nombre de visiteurs'] || 'Non disponible').toLocaleString("fr-FR")
+                  }<br>
+                  Date de création: ${new Date(
+                    museum.creation_date || museum['Date de création']
+                  ).getFullYear()}<br>
+                  <img src="${museum.image}" alt="${museumName}" style="width:100px;height:auto;">
+                `).on('click', () => showMuseumList(museum));
+                markersLayer.addLayer(marker);
+                coordMap.set(coordKey, true);
+                validMuseums.push(museum);
+              }
+            } catch (e) {
+              console.error("Erreur avec les coordonnées:", coord);
+            }
+          }
+        });
+
+        return validMuseums;
+      }
+
+      function showMuseumList(museum) {
+        const museumListSection = document.getElementById('museum-list-section');
+        const museumList = document.getElementById('museum-list');
+        museumList.innerHTML = '';
+
+        const listItem = document.createElement('li');
+        listItem.innerHTML = `
+          <div class="bg-white rounded-lg shadow p-4 mb-4">
+            <h3 class="text-xl font-semibold mb-2">${museum.museumLabel || museum['Nom du Musée']}</h3>
+            <p class="text-gray-600 mb-2">Visiteurs: ${(museum.visitors || museum['Nombre de visiteurs'] || 'Non disponible').toLocaleString("fr-FR")}</p>
+            <p class="text-gray-600 mb-2">Date de création: ${new Date(museum.creation_date || museum['Date de création']).getFullYear()}</p>
+            <img src="${museum.image}" alt="${museum.museumLabel || museum['Nom du Musée']}" class="w-full h-auto">
+          </div>
+        `;
+        museumList.appendChild(listItem);
+
+        museumListSection.classList.remove('hidden');
+      }
+
+      function updateDashboard(data) {
+        const validMuseums = addMarkersToMap(data);
+
+        document.getElementById("total-museums").textContent =
+          new Intl.NumberFormat("fr-FR").format(validMuseums.length);
+
+        const totalVisitors = validMuseums.reduce(
+          (sum, museum) => sum + (museum.visitors || museum['Nombre de visiteurs'] || 0),
+          0
+        );
+        document.getElementById("total-visitors").textContent =
+          new Intl.NumberFormat("fr-FR").format(totalVisitors);
+
+        const oldestMuseum = validMuseums.reduce(
+          (oldest, museum) => {
+            const date = new Date(museum.creation_date || museum['Date de création']);
+            if (!oldest.date || date < oldest.date) {
+              return {
+                name: museum.museumLabel || museum['Nom du Musée'],
+                date
+              };
+            }
+            return oldest;
+          },
+          { name: "", date: null }
+        );
+
+        document.getElementById("oldest-year").textContent = oldestMuseum.date
+          ? new Date(oldestMuseum.date).getFullYear()
+          : "-";
+        document.getElementById("oldest-museum").textContent = oldestMuseum.name || "-";
+      }
+
+      function createChart(data) {
+        const groupedMuseums = data.reduce((acc, museum) => {
+          const museumName = museum.museumLabel || museum['Nom du Musée'];
+          const visitors = museum.visitors || museum['Nombre de visiteurs'];
+
+          if (!acc[museumName] && visitors) {
+            acc[museumName] = visitors;
+          }
+          return acc;
+        }, {});
+
+        const top10Museums = Object.entries(groupedMuseums)
+          .map(([name, visitors]) => ({
+            museumLabel: name,
+            visitors: visitors,
+          }))
+          .sort((a, b) => b.visitors - a.visitors)
+          .slice(0, 10);
+
+        const ctx = document.getElementById("museums-chart").getContext("2d");
+
+        if (chartInstance) {
+          chartInstance.destroy();
+        }
+
+        chartInstance = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: top10Museums.map((m) => m.museumLabel),
+            datasets: [
+              {
+                label: "Nombre de visiteurs",
+                data: top10Museums.map((m) => m.visitors),
+                backgroundColor: "#3B82F6",
+                borderColor: "#2563EB",
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+          },
+        });
+      }
+
+      function createYearChart(data) {
+        const yearCounts = data.reduce((acc, museum) => {
+          const year = new Date(museum.creation_date || museum['Date de création']).getFullYear();
+          if (!isNaN(year)) {
+            acc[year] = (acc[year] || 0) + 1;
+          }
+          return acc;
+        }, {});
+
+        const sortedYears = Object.keys(yearCounts).map(Number).sort((a, b) => a - b);
+
+        const ctx = document.getElementById("years-chart").getContext("2d");
+
+        if (yearsChartInstance) {
+          yearsChartInstance.destroy();
+        }
+
+        yearsChartInstance = new Chart(ctx, {
+          type: "line",
+          data: {
+            labels: sortedYears,
+            datasets: [{
+              label: "Nombre de Musées Créés",
+              data: sortedYears.map(year => yearCounts[year]),
+              borderColor: "#10B981",
+              backgroundColor: "rgba(16, 185, 129, 0.2)",
+              fill: true,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                beginAtZero: true,
+              },
+            },
+          },
+        });
+      }
+
+      function filterData(data, city) {
+        if (!city) return data;
+
+        return data.filter((museum) => {
+          const museumName = museum.museumLabel || museum['Nom du Musée'];
+          const museumCity = museum['Ville'] || museum['City'] || museum.city || museum['museumCity'] || '';
+
+          if (typeof museumName !== 'string' || typeof museumCity !== 'string') {
+            return false;
+          }
+
+          return museumName.toLowerCase().includes(city.toLowerCase()) ||
+                 museumCity.toLowerCase().includes(city.toLowerCase());
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        initMap();
+      });
+
+      document.getElementById("csvFile").addEventListener("change", function (e) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+
+        reader.onload = function (event) {
+          Papa.parse(event.target.result, {
+            header: true,
+            dynamicTyping: true,
+            skipEmptyLines: true,
+            complete: function (results) {
+              allData = results.data;
+              const cityFilter = document.getElementById("cityFilter").value;
+              const filteredData = filterData(allData, cityFilter);
+
+              updateDashboard(filteredData);
+              createChart(filteredData);
+              createYearChart(filteredData);
+
+              // Zoom to city if filter is applied
+              if (cityFilter) {
+                zoomToCity(cityFilter);
+              }
+            },
+            error: function(error) {
+              console.error("CSV Parsing Error:", error);
+            }
+          });
+        };
+
+        reader.readAsText(file);
+      });
+
+      document.getElementById("applyFilter").addEventListener("click", function () {
+        const cityFilter = document.getElementById("cityFilter").value;
+        document.getElementById("csvFile").dispatchEvent(new Event("change"));
+      });
+    </script>
+  </body>
+</html>
